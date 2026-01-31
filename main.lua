@@ -50,43 +50,49 @@ local MTAStop = InputContainer:new{
 function MTAStop:init()
     self.ui.menu:registerToMainMenu(self)
     self:loadSettings()
+    
+    -- RESTORE ges_events - the reliable way
+    self.ges_events = {
+        TapRotate = {
+            GestureRange:new{
+                ges = "tap",
+                range = Geom:new{
+                    x = Screen:getWidth() - 250, y = 0,
+                    w = 250, h = 250,
+                }
+            }
+        },
+        TapClose = {
+            GestureRange:new{
+                ges = "tap",
+                range = Geom:new{
+                    x = Screen:getWidth() * 0.2, y = Screen:getHeight() * 0.2,
+                    w = Screen:getWidth() * 0.6, h = Screen:getHeight() * 0.6,
+                }
+            }
+        }
+    }
 end
 
 function MTAStop:loadSettings()
     if self.settings then return end
-    -- Ensure directory exists (DataStorage usually handles but let's be safe)
     self.settings = LuaSettings:open(self.settings_file)
     self.api_key = self.settings:readSetting("api_key") or ""
+    logger.info("MTAStop: Loaded API Key (first 4):", string.sub(self.api_key, 1, 4))
 end
 
-function MTAStop:saveSettings()
-    if not self.settings then return end
-    self.settings:saveSetting("api_key", self.api_key or "")
-    self.settings:flush()
-end
-
--- Catch events for rotation and closing
-function MTAStop:handleEvent(ev)
-    if ev.type == "tap" then
-        local w = Screen:getWidth()
-        local h = Screen:getHeight()
-        
-        -- Top right corner (huge area for testing)
-        if ev.pos.x > w - 250 and ev.pos.y < 250 then
-            logger.info("MTAStop: Rotation tap detected")
-            self:onToggleRotation()
-            return true
-        end
-
-        -- Center area for closing
-        if ev.pos.x > w * 0.2 and ev.pos.x < w * 0.8 and
-           ev.pos.y > h * 0.2 and ev.pos.y < h * 0.8 then
-            logger.info("MTAStop: Exit tap detected")
-            self:onTapClose()
-            return true
-        end
+-- We will NOT override handleEvent anymore, relying on ges_events instead
+-- But we need onGesture to handle them
+function MTAStop:onGesture(ges)
+    if ges.action == "TapRotate" then
+        logger.info("MTAStop: TapRotate triggered")
+        self:onToggleRotation()
+        return true
+    elseif ges.action == "TapClose" then
+        logger.info("MTAStop: TapClose triggered")
+        self:onTapClose()
+        return true
     end
-    return InputContainer.handleEvent(self, ev)
 end
 
 function MTAStop:addToMainMenu(menu_items)
@@ -143,7 +149,7 @@ function MTAStop:showArrivals()
     
     NetworkMgr:turnOnWifiAndWaitForConnection(function()
         if self.status_widget then
-            self.status_widget:setText(_("Refreshing..."))
+            self.status_widget:setText(_("Updating SIRI..."))
             UIManager:setDirty(self, "ui")
         end
         self:refreshData()
@@ -174,7 +180,7 @@ function MTAStop:refreshData()
     else
         logger.err("MTAStop: Error refreshing data", all_arrivals)
         if self.status_widget then
-            self.status_widget:setText(_("Search Failed."))
+            self.status_widget:setText(_("API Error."))
             UIManager:setDirty(self, "ui")
         end
     end
@@ -193,7 +199,7 @@ function MTAStop:renderArrivals(arrivals)
             face = Font:getFace("cfont", 34),
             padding = 10,
         },
-        HorizontalSpan:new{width = math.max(10, self.dimen.w * 0.4)},
+        HorizontalSpan:new{width = math.max(10, self.dimen.w * 0.35)},
         TextWidget:new{
             text = "ROT ⟳",
             face = Font:getFace("cfont", 24),
@@ -299,6 +305,11 @@ function MTAStop:onToggleRotation()
     -- Give Kindle time to update framebuffer
     UIManager:scheduleIn(0.5, function()
         self.dimen = Screen:getSize()
+        -- Update gesture ranges for new orientation
+        self.ges_events.TapRotate[1].range.x = Screen:getWidth() - 250
+        self.ges_events.TapClose[1].range.w = Screen:getWidth() * 0.6
+        self.ges_events.TapClose[1].range.h = Screen:getHeight() * 0.6
+        
         if self.api_key ~= "" then
             self:refreshData()
         else

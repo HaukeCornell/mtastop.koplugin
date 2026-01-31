@@ -51,13 +51,21 @@ function MTAStop:init()
     self.ui.menu:registerToMainMenu(self)
     self:loadSettings()
     
-    -- RESTORE ges_events - the reliable way
+    -- Initial gesture setup
+    self:setupGestures()
+end
+
+function MTAStop:setupGestures()
+    local w = Screen:getWidth()
+    local h = Screen:getHeight()
+    logger.info("MTAStop: Setting up gestures for", w, "x", h)
+    
     self.ges_events = {
         TapRotate = {
             GestureRange:new{
                 ges = "tap",
                 range = Geom:new{
-                    x = Screen:getWidth() - 250, y = 0,
+                    x = w - 250, y = 0,
                     w = 250, h = 250,
                 }
             }
@@ -66,33 +74,31 @@ function MTAStop:init()
             GestureRange:new{
                 ges = "tap",
                 range = Geom:new{
-                    x = Screen:getWidth() * 0.2, y = Screen:getHeight() * 0.2,
-                    w = Screen:getWidth() * 0.6, h = Screen:getHeight() * 0.6,
+                    x = w * 0.2, y = h * 0.2,
+                    w = w * 0.6, h = h * 0.6,
                 }
             }
         }
     }
 end
 
+-- InputContainer automatically maps TapRotate -> onTapRotate
+function MTAStop:onTapRotate()
+    logger.info("MTAStop: onTapRotate")
+    self:onToggleRotation()
+    return true
+end
+
+function MTAStop:onTapClose()
+    logger.info("MTAStop: onTapClose")
+    UIManager:close(self)
+    return true
+end
+
 function MTAStop:loadSettings()
     if self.settings then return end
     self.settings = LuaSettings:open(self.settings_file)
     self.api_key = self.settings:readSetting("api_key") or ""
-    logger.info("MTAStop: Loaded API Key (first 4):", string.sub(self.api_key, 1, 4))
-end
-
--- We will NOT override handleEvent anymore, relying on ges_events instead
--- But we need onGesture to handle them
-function MTAStop:onGesture(ges)
-    if ges.action == "TapRotate" then
-        logger.info("MTAStop: TapRotate triggered")
-        self:onToggleRotation()
-        return true
-    elseif ges.action == "TapClose" then
-        logger.info("MTAStop: TapClose triggered")
-        self:onTapClose()
-        return true
-    end
 end
 
 function MTAStop:addToMainMenu(menu_items)
@@ -110,6 +116,7 @@ function MTAStop:showArrivals()
     
     self:loadSettings()
     self.dimen = Screen:getSize()
+    self:setupGestures() -- Refresh ranges just in case
 
     if self.api_key == "" then
        logger.warn("MTAStop: API Key Missing")
@@ -199,7 +206,7 @@ function MTAStop:renderArrivals(arrivals)
             face = Font:getFace("cfont", 34),
             padding = 10,
         },
-        HorizontalSpan:new{width = math.max(10, self.dimen.w * 0.35)},
+        HorizontalSpan:new{width = math.max(10, self.dimen.w * 0.3)},
         TextWidget:new{
             text = "ROT ⟳",
             face = Font:getFace("cfont", 24),
@@ -217,9 +224,9 @@ function MTAStop:renderArrivals(arrivals)
     else
         local limit = math.min(#arrivals, self.dimen.h > self.dimen.w and 6 or 4)
         
-        local line_font_size = self.dimen.w > self.dimen.h and 70 or 50
-        local dest_font_size = self.dimen.w > self.dimen.h and 26 or 20
-        local wait_font_size = self.dimen.w > self.dimen.h and 60 or 40
+        local line_font_size = self.dimen.w > self.dimen.h and 70 or 45
+        local dest_font_size = self.dimen.w > self.dimen.h and 26 or 18
+        local wait_font_size = self.dimen.w > self.dimen.h and 60 or 38
         local sub_font_size = self.dimen.w > self.dimen.h and 22 or 16
 
         for i = 1, limit do
@@ -235,7 +242,7 @@ function MTAStop:renderArrivals(arrivals)
                 TextWidget:new{
                     text = arr.destination:upper(),
                     face = Font:getFace("cfont", dest_font_size),
-                    maxWidth = self.dimen.w * 0.5,
+                    maxWidth = self.dimen.w * 0.45,
                     padding = 2,
                 }
             }
@@ -292,7 +299,7 @@ function MTAStop:renderArrivals(arrivals)
 end
 
 function MTAStop:onToggleRotation()
-    logger.info("MTAStop: Toggling orientation")
+    logger.info("MTAStop: onToggleRotation")
     local new_orientation
     if Screen:isPortrait() then
         new_orientation = Device.SCREEN_ORIENTATION_LANDSCAPE
@@ -303,13 +310,9 @@ function MTAStop:onToggleRotation()
     Screen:setOrientation(new_orientation)
     
     -- Give Kindle time to update framebuffer
-    UIManager:scheduleIn(0.5, function()
+    UIManager:scheduleIn(1.0, function()
         self.dimen = Screen:getSize()
-        -- Update gesture ranges for new orientation
-        self.ges_events.TapRotate[1].range.x = Screen:getWidth() - 250
-        self.ges_events.TapClose[1].range.w = Screen:getWidth() * 0.6
-        self.ges_events.TapClose[1].range.h = Screen:getHeight() * 0.6
-        
+        self:setupGestures() -- Update ranges for new orientation
         if self.api_key ~= "" then
             self:refreshData()
         else
@@ -321,6 +324,7 @@ end
 function MTAStop:onOrientationUpdate()
     logger.info("MTAStop: Orientation update detected")
     self.dimen = Screen:getSize()
+    self:setupGestures()
     if self.api_key ~= "" then
         self:refreshData()
     else
@@ -343,10 +347,6 @@ function MTAStop:setupAutoRefresh()
         UIManager:unschedule(self.autoRefresh)
         self.autoRefresh = nil
     end
-end
-
-function MTAStop:onTapClose()
-    UIManager:close(self)
 end
 
 return MTAStop

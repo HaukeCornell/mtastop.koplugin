@@ -48,23 +48,49 @@ function MTAApi:_makeRequest(url)
     end
 end
 
--- Flexible ISO 8601 date parsing
--- Just extracts numbers, ignores everything else (.000, offsets, etc)
--- Since we compare server-time strings against arrival-time strings,
--- the relative difference is correct as long as they refer to the same timezone.
-function MTAApi:_parseIsoDateToSeconds(iso)
+-- Robust ISO 8601 date parsing that handles 'Z' and offset (+/-HH:MM)
+-- Returns UTC epoch
+function MTAApi:_parseIsoToUtcSeconds(iso)
     if not iso then return nil end
-    local y, m, d, h, min, s = iso:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
+    local y, m, d, h, min, s, tz = iso:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)(.*)")
     if not y then return nil end
     
-    return os.time({
-        year = tonumber(y),
-        month = tonumber(m),
-        day = tonumber(d),
-        hour = tonumber(h),
-        min = tonumber(min),
-        sec = tonumber(s)
+    -- Base time as if it were local components
+    local t = os.time({
+        year = tonumber(y), month = tonumber(m), day = tonumber(d),
+        hour = tonumber(h), min = tonumber(min), sec = tonumber(s),
+        isdst = false
     })
+
+    -- But components were NOT necessarily local.
+    -- We need to compensate for the fact that os.time() returns a local epoch.
+    -- Let's calculate the local timezone offset first.
+    local now = os.time()
+    local utc_now = os.time(os.date("!*t", now))
+    local local_to_utc_offset = os.difftime(now, utc_now) -- e.g. -18000 for NYC (5h)
+
+    -- Now 't' is local epoch of those components.
+    -- We want the normalized UTC epoch.
+    -- If string was "15:00:00-05:00", it means UTC is 20:00:00.
+    -- So we need to add the offset from the string (+5h) and subtract the device offset.
+    
+    local string_offset = 0
+    if tz:match("Z") then
+        string_offset = 0
+    else
+        local sign, off_h, off_min = tz:match("([%+%-])(%d%d):?(%d%d)")
+        if sign then
+            string_offset = tonumber(off_h) * 3600 + (tonumber(off_min) or 0) * 60
+            if sign == "+" then
+                string_offset = -string_offset -- UTC = Local - (+)Offset
+            else
+                string_offset = string_offset -- UTC = Local - (-)Offset = Local + Offset
+            end
+        end
+    end
+    
+    -- Normalized UTC epoch = LocalEpochOfComponents + StringOffset - LocalToUtcOffset
+    return t + string_offset - local_to_utc_offset
 end
 
 function MTAApi:getStopMonitoring(stop_id)
@@ -85,14 +111,13 @@ function MTAApi:getStopMonitoring(stop_id)
     local siri = data.Siri
     if not siri then return nil end
     
-    -- Reference "NOW" from the server's own response timestamp
+    -- Reference "NOW" from server
     local server_time_str = siri.ServiceDelivery and siri.ServiceDelivery.ResponseTimestamp
-    local server_now = self:_parseIsoDateToSeconds(server_time_str)
+    local server_now_utc = self:_parseIsoToUtcSeconds(server_time_str)
     
-    if not server_now then
+    if not server_now_utc then
         logger.warn("MTAApi: Could not parse server ResponseTimestamp", server_time_str)
-        -- Fallback to device time if server time is missing
-        server_now = os.time()
+        server_now_utc = os.time(os.date("!*t")) -- Fallback to device UTC
     end
 
     local arrivals = {}
@@ -107,17 +132,18 @@ function MTAApi:getStopMonitoring(stop_id)
         if journey then
             local call = journey.MonitoredCall
             if call then
-                local expected_arrival_str = call.ExpectedArrivalTime or call.AimedArrivalTime
-                local arrival_seconds = self:_parseIsoDateToSeconds(expected_arrival_str)
+                local expected_str = call.ExpectedArrivalTime or call.AimedArrivalTime
+                local arrival_utc = self:_parseIsoToUtcSeconds(expected_str)
                 
-                if arrival_seconds then
-                    local wait_time = math.max(0, math.floor(os.difftime(arrival_seconds, server_now) / 60))
+                if arrival_utc then
+                    local wait_time = math.max(0, math.floor(os.difftime(arrival_utc, server_now_utc) / 60))
                     local stop_dist = ""
                     local stops_away = nil
                     
                     if call.Extensions and call.Extensions.Distances then
                        stop_dist = call.Extensions.Distances.PresentableDistance or ""
-                       stops_away = call.Extensions.Distances.StopsFromStop
+                       -- IMPORTANT: Use StopsFromCall as per SIRI standard for MTA Bus Time
+                       stops_away = call.Extensions.Distances.StopsFromCall
                     end
 
                     table.insert(arrivals, {
@@ -126,17 +152,14 @@ function MTAApi:getStopMonitoring(stop_id)
                         wait_time = wait_time,
                         distance = stop_dist,
                         stops_away = stops_away,
-                        arrival_time = arrival_seconds
+                        arrival_time = arrival_utc
                     })
-                else
-                    logger.warn("MTAApi: Could not parse arrival time", expected_arrival_str)
                 end
             end
         end
     end
     
     table.sort(arrivals, function(a, b) return a.wait_time < b.wait_time end)
-    logger.info("MTAApi: Found", #arrivals, "arrivals for stop", stop_id)
     return arrivals
 end
 

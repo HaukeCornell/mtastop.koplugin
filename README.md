@@ -2,12 +2,16 @@
 
 A native Lua plugin for KOreader that displays real-time MTA bus arrivals and local weather. Optimized for Kindle e-ink displays.
 
+![Image](MTAstop.jpeg)
+
 ## Features
 - **Real-time SIRI API**: Live bus arrival data with "stops away" tracking.
 - **Dynamic Weather**: Displays outside temperature (°C) in the top-right corner using Open-Meteo.
 - **Orientation Independent**: Works in Portrait and Landscape (uses KOreader's system rotation).
 - **Auto-Refresh**: Updates every 60 seconds.
 - **Clean UI**: Minimalist design focused on readability.
+- **Customizable**: Change stops and API key in `settings/mtastop.lua`.
+- **Native KOreader Plugin**: No external dependencies. Supports KOreader's built-in rotation and dark mode.
 - **Secure**: API key stored in a separate settings file.
 
 ## Installation

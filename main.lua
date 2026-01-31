@@ -45,31 +45,20 @@ local MTAStop = InputContainer:new{
     settings_file = DataStorage:getSettingsDir() .. "/mtastop.lua",
     settings = nil,
     stops = { "504228", "505277" },
+    temperature = nil,
 }
 
 function MTAStop:init()
     self.ui.menu:registerToMainMenu(self)
     self:loadSettings()
-    
-    -- Initial gesture setup
     self:setupGestures()
 end
 
 function MTAStop:setupGestures()
     local w = Screen:getWidth()
     local h = Screen:getHeight()
-    logger.info("MTAStop: Setting up gestures for", w, "x", h)
-    
+    -- Only need TapClose now (Center 0.6x0.6)
     self.ges_events = {
-        TapRotate = {
-            GestureRange:new{
-                ges = "tap",
-                range = Geom:new{
-                    x = w - 250, y = 0,
-                    w = 250, h = 250,
-                }
-            }
-        },
         TapClose = {
             GestureRange:new{
                 ges = "tap",
@@ -82,13 +71,6 @@ function MTAStop:setupGestures()
     }
 end
 
--- InputContainer automatically maps TapRotate -> onTapRotate
-function MTAStop:onTapRotate()
-    logger.info("MTAStop: onTapRotate")
-    self:onToggleRotation()
-    return true
-end
-
 function MTAStop:onTapClose()
     logger.info("MTAStop: onTapClose")
     UIManager:close(self)
@@ -99,6 +81,8 @@ function MTAStop:loadSettings()
     if self.settings then return end
     self.settings = LuaSettings:open(self.settings_file)
     self.api_key = self.settings:readSetting("api_key") or ""
+    self.lat = self.settings:readSetting("latitude") or 40.7128
+    self.lon = self.settings:readSetting("longitude") or -74.0060
 end
 
 function MTAStop:addToMainMenu(menu_items)
@@ -116,7 +100,7 @@ function MTAStop:showArrivals()
     
     self:loadSettings()
     self.dimen = Screen:getSize()
-    self:setupGestures() -- Refresh ranges just in case
+    self:setupGestures()
 
     if self.api_key == "" then
        logger.warn("MTAStop: API Key Missing")
@@ -136,7 +120,6 @@ function MTAStop:showArrivals()
         self.api = MTAApi:new({api_key = self.api_key})
     end
     
-    -- Loading state
     self.status_widget = TextWidget:new{
         text = _("Connecting..."),
         face = Font:getFace("cfont", 40)
@@ -168,7 +151,8 @@ end
 function MTAStop:refreshData()
     logger.info("MTAStop: Refreshing data")
     
-    local ok, all_arrivals = pcall(function()
+    -- Fetch arrivals and weather in parallel-ish pcall
+    local ok_arr, all_arrivals = pcall(function()
         local results = {}
         for _, stop_id in ipairs(self.stops) do
             local arrivals = self.api:getStopMonitoring(stop_id)
@@ -180,8 +164,16 @@ function MTAStop:refreshData()
         end
         return results
     end)
+
+    local ok_wea, temp = pcall(function()
+        return self.api:getCurrentWeather(self.lat, self.lon)
+    end)
     
-    if ok and all_arrivals then
+    if ok_wea and temp then
+        self.temperature = temp
+    end
+
+    if ok_arr and all_arrivals then
         table.sort(all_arrivals, function(a, b) return a.wait_time < b.wait_time end)
         self:renderArrivals(all_arrivals)
     else
@@ -199,17 +191,18 @@ function MTAStop:renderArrivals(arrivals)
     
     local rows = {}
     
-    -- Header Row
+    -- Header Row: Left = Time, Right = Temperature
+    local temp_str = self.temperature and string.format("%.1f°C", self.temperature) or ""
     local header_row = HorizontalGroup:new{
         TextWidget:new{
             text = "↻ " .. os.date("%X"),
             face = Font:getFace("cfont", 34),
             padding = 10,
         },
-        HorizontalSpan:new{width = math.max(10, self.dimen.w * 0.3)},
+        HorizontalSpan:new{width = math.max(10, self.dimen.w * 0.4)},
         TextWidget:new{
-            text = "ROT ⟳",
-            face = Font:getFace("cfont", 24),
+            text = temp_str,
+            face = Font:getFace("cfont", 34),
             padding = 10,
         }
     }
@@ -222,12 +215,13 @@ function MTAStop:renderArrivals(arrivals)
             face = Font:getFace("cfont", 32),
         })
     else
-        local limit = math.min(#arrivals, self.dimen.h > self.dimen.w and 6 or 4)
+        local is_portrait = self.dimen.h > self.dimen.w
+        local limit = math.min(#arrivals, is_portrait and 6 or 4)
         
-        local line_font_size = self.dimen.w > self.dimen.h and 70 or 45
-        local dest_font_size = self.dimen.w > self.dimen.h and 26 or 18
-        local wait_font_size = self.dimen.w > self.dimen.h and 60 or 38
-        local sub_font_size = self.dimen.w > self.dimen.h and 22 or 16
+        local line_font_size = is_portrait and 50 or 70
+        local dest_font_size = is_portrait and 20 or 26
+        local wait_font_size = is_portrait and 40 or 60
+        local sub_font_size = is_portrait and 16 or 22
 
         for i = 1, limit do
             local arr = arrivals[i]
@@ -274,11 +268,7 @@ function MTAStop:renderArrivals(arrivals)
         end
     end
     
-    table.insert(rows, TextWidget:new{
-        text = _("Tap Center to Exit"),
-        face = Font:getFace("cfont", 16),
-        padding = 5,
-    })
+    -- Removed exit instruction in footer as requested
 
     if self[1] then
         self[1]:free()
@@ -298,29 +288,7 @@ function MTAStop:renderArrivals(arrivals)
     UIManager:setDirty(self, "ui")
 end
 
-function MTAStop:onToggleRotation()
-    logger.info("MTAStop: onToggleRotation")
-    local new_orientation
-    if Screen:isPortrait() then
-        new_orientation = Device.SCREEN_ORIENTATION_LANDSCAPE
-    else
-        new_orientation = Device.SCREEN_ORIENTATION_PORTRAIT
-    end
-    
-    Screen:setOrientation(new_orientation)
-    
-    -- Give Kindle time to update framebuffer
-    UIManager:scheduleIn(1.0, function()
-        self.dimen = Screen:getSize()
-        self:setupGestures() -- Update ranges for new orientation
-        if self.api_key ~= "" then
-            self:refreshData()
-        else
-            self:showArrivals()
-        end
-    end)
-end
-
+-- KOreader detects orientation changes automatically and calls this
 function MTAStop:onOrientationUpdate()
     logger.info("MTAStop: Orientation update detected")
     self.dimen = Screen:getSize()

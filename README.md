@@ -1,13 +1,14 @@
 # MTA Bus Stop KOreader Plugin
 
-A native Lua plugin for KOreader that displays real-time MTA bus arrivals. Optimized for Kindle e-ink displays.
+A native Lua plugin for KOreader that displays real-time MTA bus arrivals and local weather. Optimized for Kindle e-ink displays.
 
 ## Features
-- **Real-time SIRI API**: Live bus arrival data.
-- **Orientation Support**: Tap the **top-right corner** (ROT area) to manually toggle between Portrait and Landscape.
-- **Detailed Arrivals**: Shows bus lines, destinations, estimated minutes, and **how many stops away** the bus is.
-- **Auto-Refresh**: Updates every 60 seconds with a clean timestamp.
-- **Secure**: API key is stored in a separate settings file to prevent accidental leaks.
+- **Real-time SIRI API**: Live bus arrival data with "stops away" tracking.
+- **Dynamic Weather**: Displays outside temperature (°C) in the top-right corner using Open-Meteo.
+- **Orientation Independent**: Works in Portrait and Landscape (uses KOreader's system rotation).
+- **Auto-Refresh**: Updates every 60 seconds.
+- **Clean UI**: Minimalist design focused on readability.
+- **Secure**: API key stored in a separate settings file.
 
 ## Installation
 1. Copy the `mtastop.koplugin` folder to `koreader/plugins/`.
@@ -16,23 +17,24 @@ A native Lua plugin for KOreader that displays real-time MTA bus arrivals. Optim
 
 ## Configuration
 ### API Key (Required)
-For security, the API key is **not** included in the source code. To set it up:
-1. Run the plugin once; it will create a template settings file.
-2. Locate `koreader/settings/mtastop.lua` on your Kindle.
-3. Edit the file and add your key:
+The API key is required for bus arrivals.
+1. Run the plugin once to generate the settings file.
+2. Open `koreader/settings/mtastop.lua` on your Kindle.
+3. Edit the file:
 ```lua
 return {
     ["api_key"] = "YOUR_MTA_API_KEY_HERE",
+    ["latitude"] = 40.7128,  -- Optional: for weather
+    ["longitude"] = -74.0060, -- Optional: for weather
 }
 ```
-You can get a free key from the [MTA Bus Time API portal](https://new.mta.info/developers).
 
 ### Stop IDs
-Default stops are in `main.lua`. Find your stop numbers [here](https://bustime-beta.mta.info/?search=505277&uuid=1e32f782-6f39-4290-8ed5-e259f6c51089).
+Default stops are in `main.lua`.
 
 ## Interaction
-- **Top-Right**: Toggle Rotation.
-- **Center**: Close/Exit.
+- **Center Tap**: Close/Exit.
+- **Rotation**: Use the system menu in KOreader to change orientation.
 
 ## Credits
 - Based on the [Digital Clock Plugin](https://github.com/koreader/koreader/tree/master/plugins/digitalclock.koplugin).

@@ -25,11 +25,11 @@ function MTAApi:_makeRequest(url)
         sink = ltn12.sink.table(sink),
     }
     logger.info("MTAApi: Requesting URL", url)
-    local headers = socket.skip(2, http.request(request))
+    local ok_req, code, headers = http.request(request)
     socketutil:reset_timeout()
     
-    if headers == nil then
-        logger.err("MTAApi: Network request failed (headers nil)")
+    if not ok_req then
+        logger.err("MTAApi: Network request failed", code)
         return nil
     end
     
@@ -48,32 +48,22 @@ function MTAApi:_makeRequest(url)
     end
 end
 
--- Robust ISO 8601 date parsing that handles 'Z' and offset (+/-HH:MM)
--- Returns UTC epoch
+-- Flexible ISO 8601 date parsing
 function MTAApi:_parseIsoToUtcSeconds(iso)
     if not iso then return nil end
     local y, m, d, h, min, s, tz = iso:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)(.*)")
     if not y then return nil end
     
-    -- Base time as if it were local components
     local t = os.time({
         year = tonumber(y), month = tonumber(m), day = tonumber(d),
         hour = tonumber(h), min = tonumber(min), sec = tonumber(s),
         isdst = false
     })
 
-    -- But components were NOT necessarily local.
-    -- We need to compensate for the fact that os.time() returns a local epoch.
-    -- Let's calculate the local timezone offset first.
     local now = os.time()
     local utc_now = os.time(os.date("!*t", now))
-    local local_to_utc_offset = os.difftime(now, utc_now) -- e.g. -18000 for NYC (5h)
+    local local_to_utc_offset = os.difftime(now, utc_now)
 
-    -- Now 't' is local epoch of those components.
-    -- We want the normalized UTC epoch.
-    -- If string was "15:00:00-05:00", it means UTC is 20:00:00.
-    -- So we need to add the offset from the string (+5h) and subtract the device offset.
-    
     local string_offset = 0
     if tz:match("Z") then
         string_offset = 0
@@ -82,14 +72,13 @@ function MTAApi:_parseIsoToUtcSeconds(iso)
         if sign then
             string_offset = tonumber(off_h) * 3600 + (tonumber(off_min) or 0) * 60
             if sign == "+" then
-                string_offset = -string_offset -- UTC = Local - (+)Offset
+                string_offset = -string_offset
             else
-                string_offset = string_offset -- UTC = Local - (-)Offset = Local + Offset
+                string_offset = string_offset
             end
         end
     end
     
-    -- Normalized UTC epoch = LocalEpochOfComponents + StringOffset - LocalToUtcOffset
     return t + string_offset - local_to_utc_offset
 end
 
@@ -111,13 +100,11 @@ function MTAApi:getStopMonitoring(stop_id)
     local siri = data.Siri
     if not siri then return nil end
     
-    -- Reference "NOW" from server
     local server_time_str = siri.ServiceDelivery and siri.ServiceDelivery.ResponseTimestamp
     local server_now_utc = self:_parseIsoToUtcSeconds(server_time_str)
     
     if not server_now_utc then
-        logger.warn("MTAApi: Could not parse server ResponseTimestamp", server_time_str)
-        server_now_utc = os.time(os.date("!*t")) -- Fallback to device UTC
+        server_now_utc = os.time(os.date("!*t"))
     end
 
     local arrivals = {}
@@ -142,7 +129,6 @@ function MTAApi:getStopMonitoring(stop_id)
                     
                     if call.Extensions and call.Extensions.Distances then
                        stop_dist = call.Extensions.Distances.PresentableDistance or ""
-                       -- IMPORTANT: Use StopsFromCall as per SIRI standard for MTA Bus Time
                        stops_away = call.Extensions.Distances.StopsFromCall
                     end
 
@@ -161,6 +147,19 @@ function MTAApi:getStopMonitoring(stop_id)
     
     table.sort(arrivals, function(a, b) return a.wait_time < b.wait_time end)
     return arrivals
+end
+
+-- NEW: Current Weather via Open-Meteo (No key required)
+function MTAApi:getCurrentWeather(lat, lon)
+    lat = lat or 40.7128 -- Default NYC
+    lon = lon or -74.0060
+    local url = string.format("https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current_weather=true", lat, lon)
+    
+    local data = self:_makeRequest(url)
+    if data and data.current_weather then
+        return data.current_weather.temperature
+    end
+    return nil
 end
 
 return MTAApi

@@ -6,7 +6,7 @@ local logger = require("logger")
 local json = require("json")
 
 local MTAApi = {
-    api_key = nil -- Should be set via new() or setter
+    api_key = nil
 }
 
 function MTAApi:new(o)
@@ -48,14 +48,44 @@ function MTAApi:_makeRequest(url)
     end
 end
 
--- Helper to parse ISO 8601 date string to epoch time
+-- Robust ISO 8601 date parsing with timezone support
+-- Returns epoch time in UTC
 function MTAApi:_parseIsoDate(iso)
     if not iso then return nil end
-    local y, m, d, h, min, s = iso:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
-    if y then
-        return os.time({year=tonumber(y), month=tonumber(m), day=tonumber(d), hour=tonumber(h), min=tonumber(min), sec=tonumber(s)})
+    
+    -- Match "2026-01-31T15:13:56-05:00" or "2026-01-31T20:13:56Z"
+    local y, m, d, h, min, s, off_sign, off_h, off_min = iso:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)([Z%+%-])?(%d?%d?):?(%d?%d?)")
+    
+    if not y then return nil end
+    
+    -- Get base epoch (assumed UTC for calculation)
+    local time = os.time({
+        year = tonumber(y),
+        month = tonumber(m),
+        day = tonumber(d),
+        hour = tonumber(h),
+        min = tonumber(min),
+        sec = tonumber(s),
+        isdst = false -- Use false to treat as UTC potentially
+    })
+
+    -- Adjust for timezone offset
+    if off_sign == "+" then
+        local offset_secs = (tonumber(off_h) or 0) * 3600 + (tonumber(off_min) or 0) * 60
+        time = time - offset_secs
+    elseif off_sign == "-" then
+        local offset_secs = (tonumber(off_h) or 0) * 3600 + (tonumber(off_min) or 0) * 60
+        time = time + offset_secs
     end
-    return nil
+    
+    -- Note: os.time returns local epoch. To get UTC epoch correctly in Lua:
+    -- If we pass a table to os.time, it treats it as local time.
+    -- But if we want to treat the table as UTC, we need to adjust.
+    local utc_now = os.time(os.date("!*t"))
+    local local_now = os.time(os.date("*t"))
+    local diff = os.difftime(local_now, utc_now)
+    
+    return time - diff
 end
 
 function MTAApi:getStopMonitoring(stop_id)
@@ -75,18 +105,13 @@ function MTAApi:getStopMonitoring(stop_id)
     
     local arrivals = {}
     local deliveries = data.Siri and data.Siri.ServiceDelivery and data.Siri.ServiceDelivery.StopMonitoringDelivery
-    if not deliveries or #deliveries == 0 then 
-        logger.info("MTAApi: No deliveries found in SIRI response")
-        return arrivals 
-    end
+    if not deliveries or #deliveries == 0 then return arrivals end
     
     local visits = deliveries[1].MonitoredStopVisit
-    if not visits then 
-        logger.info("MTAApi: No monitored visits found for stop", stop_id)
-        return arrivals 
-    end
+    if not visits then return arrivals end
     
-    local now = os.time()
+    -- Current time in UTC epoch
+    local now = os.time(os.date("!*t"))
     
     for _, visit in ipairs(visits) do
         local journey = visit.MonitoredVehicleJourney
@@ -96,7 +121,7 @@ function MTAApi:getStopMonitoring(stop_id)
             local arrival_time = self:_parseIsoDate(expected_arrival)
             
             if arrival_time then
-                local wait_time = math.max(0, math.floor((arrival_time - now) / 60))
+                local wait_time = math.max(0, math.floor(os.difftime(arrival_time, now) / 60))
                 local stop_dist = ""
                 local stops_away = nil
                 
@@ -118,8 +143,6 @@ function MTAApi:getStopMonitoring(stop_id)
     end
     
     table.sort(arrivals, function(a, b) return a.wait_time < b.wait_time end)
-    logger.info("MTAApi: Parsed", #arrivals, "arrivals for stop", stop_id)
-    
     return arrivals
 end
 

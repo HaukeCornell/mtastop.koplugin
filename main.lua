@@ -54,6 +54,7 @@ end
 
 function MTAStop:loadSettings()
     if self.settings then return end
+    -- Ensure directory exists (DataStorage usually handles but let's be safe)
     self.settings = LuaSettings:open(self.settings_file)
     self.api_key = self.settings:readSetting("api_key") or ""
 end
@@ -70,15 +71,17 @@ function MTAStop:handleEvent(ev)
         local w = Screen:getWidth()
         local h = Screen:getHeight()
         
-        -- Top right corner (200x200 for easier hitting)
-        if ev.pos.x > w - 200 and ev.pos.y < 200 then
+        -- Top right corner (huge area for testing)
+        if ev.pos.x > w - 250 and ev.pos.y < 250 then
+            logger.info("MTAStop: Rotation tap detected")
             self:onToggleRotation()
             return true
         end
 
-        -- Center area (0.6x0.6) for closing
+        -- Center area for closing
         if ev.pos.x > w * 0.2 and ev.pos.x < w * 0.8 and
            ev.pos.y > h * 0.2 and ev.pos.y < h * 0.8 then
+            logger.info("MTAStop: Exit tap detected")
             self:onTapClose()
             return true
         end
@@ -100,28 +103,29 @@ function MTAStop:showArrivals()
     logger.info("MTAStop: Showing arrivals")
     
     self:loadSettings()
+    self.dimen = Screen:getSize()
+
     if self.api_key == "" then
-       -- If no key, we might need a way to set it. For now, we'll use the hardcoded one if it matches a placeholder
-       -- but the user wants me to NOT leak it. So I'll tell them it's missing.
+       logger.warn("MTAStop: API Key Missing")
        self.status_widget = TextWidget:new{
-           text = _("API Key Missing! Set it in settings/mtastop.lua"),
+           text = _("API Key Missing!\nCreate koreader/settings/mtastop.lua\n\nTap center to exit."),
            face = Font:getFace("cfont", 30),
-           maxWidth = Screen:getWidth() * 0.8
+           alignment = "center",
+           maxWidth = self.dimen.w * 0.8
        }
-       self.container = CenterContainer:new{ self.status_widget, dimen = Screen:getSize() }
+       self.container = CenterContainer:new{ self.status_widget, dimen = self.dimen }
        self[1] = FrameContainer:new{ background = Blitbuffer.COLOR_WHITE, self.container }
        UIManager:show(self, "full")
        return
     end
 
-    self.dimen = Screen:getSize()
     if not self.api then
         self.api = MTAApi:new({api_key = self.api_key})
     end
     
     -- Loading state
     self.status_widget = TextWidget:new{
-        text = _("Wait..."),
+        text = _("Connecting..."),
         face = Font:getFace("cfont", 40)
     }
     
@@ -139,7 +143,7 @@ function MTAStop:showArrivals()
     
     NetworkMgr:turnOnWifiAndWaitForConnection(function()
         if self.status_widget then
-            self.status_widget:setText(_("Updating..."))
+            self.status_widget:setText(_("Refreshing..."))
             UIManager:setDirty(self, "ui")
         end
         self:refreshData()
@@ -170,7 +174,7 @@ function MTAStop:refreshData()
     else
         logger.err("MTAStop: Error refreshing data", all_arrivals)
         if self.status_widget then
-            self.status_widget:setText(_("Error."))
+            self.status_widget:setText(_("Search Failed."))
             UIManager:setDirty(self, "ui")
         end
     end
@@ -178,21 +182,21 @@ end
 
 function MTAStop:renderArrivals(arrivals)
     self.dimen = Screen:getSize()
-    logger.info("MTAStop: Rendering", #arrivals, "arrivals, dimen:", self.dimen.w, "x", self.dimen.h)
+    logger.info("MTAStop: Rendering", #arrivals, "arrivals")
     
     local rows = {}
     
-    -- Header: Refresh Icon + Time
+    -- Header Row
     local header_row = HorizontalGroup:new{
         TextWidget:new{
             text = "↻ " .. os.date("%X"),
             face = Font:getFace("cfont", 34),
             padding = 10,
         },
-        HorizontalSpan:new{width = self.dimen.w * 0.4},
+        HorizontalSpan:new{width = math.max(10, self.dimen.w * 0.4)},
         TextWidget:new{
             text = "ROT ⟳",
-            face = Font:getFace("cfont", 20),
+            face = Font:getFace("cfont", 24),
             padding = 10,
         }
     }
@@ -201,7 +205,7 @@ function MTAStop:renderArrivals(arrivals)
 
     if #arrivals == 0 then
         table.insert(rows, TextWidget:new{
-            text = _("No buses found."),
+            text = _("No arrivals found."),
             face = Font:getFace("cfont", 32),
         })
     else
@@ -210,7 +214,7 @@ function MTAStop:renderArrivals(arrivals)
         local line_font_size = self.dimen.w > self.dimen.h and 70 or 50
         local dest_font_size = self.dimen.w > self.dimen.h and 26 or 20
         local wait_font_size = self.dimen.w > self.dimen.h and 60 or 40
-        local sub_font_size = self.dimen.w > self.dimen.h and 22 or 18
+        local sub_font_size = self.dimen.w > self.dimen.h and 22 or 16
 
         for i = 1, limit do
             local arr = arrivals[i]
@@ -221,7 +225,6 @@ function MTAStop:renderArrivals(arrivals)
                 padding = 5,
             }
             
-            -- Info column: Destination + Stops Away
             local info_group = VerticalGroup:new{
                 TextWidget:new{
                     text = arr.destination:upper(),
@@ -258,9 +261,8 @@ function MTAStop:renderArrivals(arrivals)
         end
     end
     
-    -- Footer
     table.insert(rows, TextWidget:new{
-        text = _("Center Tap to Exit"),
+        text = _("Tap Center to Exit"),
         face = Font:getFace("cfont", 16),
         padding = 5,
     })
@@ -285,22 +287,34 @@ end
 
 function MTAStop:onToggleRotation()
     logger.info("MTAStop: Toggling orientation")
+    local new_orientation
     if Screen:isPortrait() then
-        Screen:setOrientation(Device.SCREEN_ORIENTATION_LANDSCAPE)
+        new_orientation = Device.SCREEN_ORIENTATION_LANDSCAPE
     else
-        Screen:setOrientation(Device.SCREEN_ORIENTATION_PORTRAIT)
+        new_orientation = Device.SCREEN_ORIENTATION_PORTRAIT
     end
-    -- Some devices need a wait
+    
+    Screen:setOrientation(new_orientation)
+    
+    -- Give Kindle time to update framebuffer
     UIManager:scheduleIn(0.5, function()
         self.dimen = Screen:getSize()
-        self:refreshData()
+        if self.api_key ~= "" then
+            self:refreshData()
+        else
+            self:showArrivals()
+        end
     end)
 end
 
 function MTAStop:onOrientationUpdate()
     logger.info("MTAStop: Orientation update detected")
     self.dimen = Screen:getSize()
-    self:refreshData()
+    if self.api_key ~= "" then
+        self:refreshData()
+    else
+        self:showArrivals()
+    end
 end
 
 function MTAStop:setupAutoRefresh()
